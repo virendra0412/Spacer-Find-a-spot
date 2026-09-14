@@ -1,0 +1,17 @@
+# Local dev database only. Production DB should be a managed Postgres
+# (RDS, Supabase, Neon, Render, etc.) with PostGIS enabled.
+version: "3.8"
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: spacer
+      POSTGRES_PASSWORD: spacer_local_pw
+      POSTGRES_DB: spacer
+    ports:
+      - "5432:5432"
+    volumes:
+      - spacer_pg_data:/var/lib/postgresql/data
+volumes:
+  spacer_pg_data:
