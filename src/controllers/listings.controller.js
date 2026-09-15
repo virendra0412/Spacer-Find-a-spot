@@ -8,7 +8,7 @@ const createListingSchema = z.object({
   lat: z.number(),
   lng: z.number(),
   address_text: z.string().optional(),
-  vehicle_size: z.enum(['hatchback', 'sedan', 'suv', 'any']).default('any'),
+  vehicle_type: z.enum(['2w', '4w', '6w', 'any']).default('any'),
   covered: z.boolean().default(false),
   has_cctv: z.boolean().default(false),
   price_per_hour: z.number().positive(),
@@ -22,15 +22,15 @@ async function createListing(req, res) {
 
   const { rows } = await pool.query(
     `INSERT INTO listings
-       (host_id, title, description, location, address_text, vehicle_size,
+       (host_id, title, description, location, address_text, vehicle_type,
         covered, has_cctv, price_per_hour, price_flat_night)
      VALUES ($1, $2, $3, ST_SetSRID(ST_MakePoint($4, $5), 4326)::geography,
              $6, $7, $8, $9, $10, $11)
-     RETURNING id, title, description, address_text, vehicle_size, covered,
+     RETURNING id, title, description, address_text, vehicle_type, covered,
                has_cctv, price_per_hour, price_flat_night, status, created_at`,
     [
       req.user.id, d.title, d.description || null, d.lng, d.lat,
-      d.address_text || null, d.vehicle_size, d.covered, d.has_cctv,
+      d.address_text || null, d.vehicle_type, d.covered, d.has_cctv,
       d.price_per_hour, d.price_flat_night || null,
     ]
   );
@@ -46,7 +46,7 @@ const updateListingSchema = z.object({
   lat: z.number().optional(),
   lng: z.number().optional(),
   address_text: z.string().optional(),
-  vehicle_size: z.enum(['hatchback', 'sedan', 'suv', 'any']).optional(),
+  vehicle_type: z.enum(['2w', '4w', '6w', 'any']).optional(),
   covered: z.boolean().optional(),
   has_cctv: z.boolean().optional(),
   price_per_hour: z.number().positive().optional(),
@@ -68,7 +68,7 @@ async function updateListing(req, res) {
   let i = 1;
 
   const simpleColumns = [
-    'title', 'description', 'address_text', 'vehicle_size',
+    'title', 'description', 'address_text', 'vehicle_type',
     'covered', 'has_cctv', 'price_per_hour', 'price_flat_night', 'status',
   ];
   for (const col of simpleColumns) {
@@ -85,8 +85,16 @@ async function updateListing(req, res) {
   if (fields.length === 0) throw new AppError(400, 'No fields to update');
 
   values.push(listing.id);
+  // Select columns explicitly (as createListing does) instead of RETURNING *
+  // — the raw `location` column comes back as PostGIS WKB hex, which is
+  // useless to the client and would silently break anything trying to
+  // redisplay a listing right after editing it.
   const { rows } = await pool.query(
-    `UPDATE listings SET ${fields.join(', ')} WHERE id = $${i} RETURNING *`,
+    `UPDATE listings SET ${fields.join(', ')}
+     WHERE id = $${i}
+     RETURNING id, host_id, title, description, address_text, vehicle_type,
+               covered, has_cctv, price_per_hour, price_flat_night, status, created_at,
+               ST_Y(location::geometry) AS lat, ST_X(location::geometry) AS lng`,
     values
   );
 
@@ -145,18 +153,39 @@ async function getOwnedListingOr404(listingId, hostId) {
 
 async function myListings(req, res) {
   const { rows } = await pool.query(
-    `SELECT l.*, COUNT(b.id) FILTER (WHERE b.status = 'completed') AS completed_bookings
+    `SELECT l.id, l.host_id, l.title, l.description, l.address_text, l.vehicle_type,
+            l.covered, l.has_cctv, l.price_per_hour, l.price_flat_night, l.status, l.created_at,
+            ST_Y(l.location::geometry) AS lat, ST_X(l.location::geometry) AS lng,
+            COUNT(b.id) FILTER (WHERE b.status = 'completed') AS completed_bookings,
+            COUNT(DISTINCT b.driver_id) FILTER (WHERE b.status = 'completed') AS unique_customers,
+            COALESCE(SUM(p.host_payout) FILTER (WHERE b.status = 'completed'), 0) AS total_earned,
+            (SELECT p2.url FROM listing_photos p2 WHERE p2.listing_id = l.id
+               ORDER BY p2.sort_order LIMIT 1) AS cover_photo_url
      FROM listings l
      LEFT JOIN bookings b ON b.listing_id = l.id
+     LEFT JOIN payments p ON p.booking_id = b.id
      WHERE l.host_id = $1
      GROUP BY l.id
      ORDER BY l.created_at DESC`,
     [req.user.id]
   );
-  res.json(rows);
+
+  // Aggregated in JS rather than a second query — every number the
+  // summary needs is already sitting in `rows` from the query above.
+  const summary = rows.reduce(
+    (acc, r) => ({
+      total_earned: acc.total_earned + Number(r.total_earned),
+      total_completed_bookings: acc.total_completed_bookings + Number(r.completed_bookings),
+      total_listings: acc.total_listings + 1,
+    }),
+    { total_earned: 0, total_completed_bookings: 0, total_listings: 0 }
+  );
+
+  res.json({ summary, listings: rows });
 }
 
-// Search: nearby listings, optionally filtered to "available right now."
+// Search: nearby listings, optionally filtered to "available right now"
+// and/or to listings that fit a given vehicle type.
 // "Available now" = there's an availability_slot covering the current
 // weekday+time, AND no active/reserved booking currently overlapping.
 const searchSchema = z.object({
@@ -164,15 +193,22 @@ const searchSchema = z.object({
   lng: z.coerce.number(),
   radius_km: z.coerce.number().default(3),
   available_now: z.coerce.boolean().optional(),
+  vehicle_type: z.enum(['2w', '4w', '6w']).optional(),
+  max_price: z.coerce.number().positive().optional(),
+  covered: z.coerce.boolean().optional(),
+  sort_by: z.enum(['distance', 'price_asc', 'price_desc']).default('distance'),
 });
 
 async function search(req, res) {
   const parsed = searchSchema.safeParse(req.query);
   if (!parsed.success) throw new AppError(400, parsed.error.issues[0].message);
-  const { lat, lng, radius_km, available_now } = parsed.data;
+  const { lat, lng, radius_km, available_now, vehicle_type, max_price, covered, sort_by } = parsed.data;
 
   const params = [lng, lat, radius_km * 1000];
   let availabilityClause = '';
+  let vehicleClause = '';
+  let priceClause = '';
+  let coveredClause = '';
 
   if (available_now) {
     availabilityClause = `
@@ -195,15 +231,42 @@ async function search(req, res) {
     `;
   }
 
+  if (vehicle_type) {
+    // A listing marked 'any' fits every vehicle type; otherwise it must
+    // match exactly — a 2w spot doesn't fit a 4w car and vice versa.
+    params.push(vehicle_type);
+    vehicleClause = ` AND (l.vehicle_type = 'any' OR l.vehicle_type = $${params.length})`;
+  }
+
+  if (max_price !== undefined) {
+    params.push(max_price);
+    priceClause = ` AND l.price_per_hour <= $${params.length}`;
+  }
+
+  if (covered) {
+    coveredClause = ' AND l.covered = true';
+  }
+
+  const orderBy = {
+    distance: 'distance_m ASC',
+    price_asc: 'l.price_per_hour ASC, distance_m ASC',
+    price_desc: 'l.price_per_hour DESC, distance_m ASC',
+  }[sort_by];
+
   const { rows } = await pool.query(
-    `SELECT l.id, l.title, l.address_text, l.vehicle_size, l.covered, l.has_cctv,
+    `SELECT l.id, l.title, l.address_text, l.vehicle_type, l.covered, l.has_cctv,
             l.price_per_hour, l.price_flat_night,
-            ST_Distance(l.location, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography) AS distance_m
+            ST_Distance(l.location, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography) AS distance_m,
+            (SELECT p.url FROM listing_photos p WHERE p.listing_id = l.id
+               ORDER BY p.sort_order LIMIT 1) AS cover_photo_url
      FROM listings l
      WHERE l.status = 'active'
        AND ST_DWithin(l.location, ST_SetSRID(ST_MakePoint($1, $2), 4326)::geography, $3)
        ${availabilityClause}
-     ORDER BY distance_m ASC
+       ${vehicleClause}
+       ${priceClause}
+       ${coveredClause}
+     ORDER BY ${orderBy}
      LIMIT 50`,
     params
   );
@@ -213,7 +276,15 @@ async function search(req, res) {
 
 async function getListing(req, res) {
   const { rows } = await pool.query(
-    `SELECT l.*, u.name AS host_name, u.rating_avg AS host_rating
+    `SELECT l.id, l.host_id, l.title, l.description, l.address_text, l.vehicle_type,
+            l.covered, l.has_cctv, l.price_per_hour, l.price_flat_night, l.status, l.created_at,
+            ST_Y(l.location::geometry) AS lat, ST_X(l.location::geometry) AS lng,
+            u.name AS host_name, u.rating_avg AS host_rating,
+            COALESCE(
+              (SELECT json_agg(json_build_object('id', p.id, 'url', p.url) ORDER BY p.sort_order)
+               FROM listing_photos p WHERE p.listing_id = l.id),
+              '[]'
+            ) AS photos
      FROM listings l JOIN users u ON u.id = l.host_id
      WHERE l.id = $1`,
     [req.params.id]

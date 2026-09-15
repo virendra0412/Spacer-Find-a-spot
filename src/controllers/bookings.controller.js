@@ -2,6 +2,7 @@ const { z } = require('zod');
 const { pool } = require('../config/db');
 const { AppError } = require('../utils/AppError');
 const { notifyUser } = require('../services/notification.service');
+const { computeSplit } = require('../config/fees');
 
 const createBookingSchema = z.object({
   listing_id: z.string().uuid(),
@@ -42,10 +43,14 @@ async function createBooking(req, res) {
   );
   const booking = rows[0];
 
-  // Stub payment row — see payments.controller for phase 2 (Razorpay).
+  // The split is computed and stored now, at the rates active right
+  // now — not derived later from a `platform_fee` config value that
+  // may have changed by the time anyone looks at this booking again.
+  const split = computeSplit(estimatedCost);
   await pool.query(
-    'INSERT INTO payments (booking_id, amount) VALUES ($1, $2)',
-    [booking.id, estimatedCost]
+    `INSERT INTO payments (booking_id, amount, subtotal, platform_fee, host_commission, host_payout)
+     VALUES ($1, $2, $3, $4, $5, $6)`,
+    [booking.id, split.grossAmount, split.subtotal, split.platformFee, split.hostCommission, split.hostPayout]
   );
 
   notifyUser(listing.host_id, 'New booking', 'Someone booked your spot.').catch(() => {});
@@ -74,7 +79,8 @@ async function myBookings(req, res) {
 
 async function getBooking(req, res) {
   const { rows } = await pool.query(
-    `SELECT b.*, l.title AS listing_title, l.address_text
+    `SELECT b.*, l.title AS listing_title, l.address_text,
+            ST_Y(l.location::geometry) AS listing_lat, ST_X(l.location::geometry) AS listing_lng
      FROM bookings b JOIN listings l ON l.id = b.listing_id
      WHERE b.id = $1 AND (b.driver_id = $2 OR l.host_id = $2)`,
     [req.params.id, req.user.id]
@@ -115,7 +121,24 @@ async function endSession(req, res) {
     [actualEnd.toISOString(), finalCost, existing.id]
   );
 
-  notifyUser(existing.host_id, 'Booking completed', `Session ended. Payout: ₹${finalCost}`).catch(() => {});
+  // Actual parked duration is almost never exactly the reserved window,
+  // so the payment split computed at booking time (against the
+  // estimate) is now stale — recompute and overwrite it against what
+  // actually happened. Without this, a driver who books 4 hours but
+  // leaves after 1 would still be charged (and the host paid out) for 4.
+  const split = computeSplit(finalCost);
+  await pool.query(
+    `UPDATE payments
+     SET amount = $1, subtotal = $2, platform_fee = $3, host_commission = $4, host_payout = $5
+     WHERE booking_id = $6`,
+    [split.grossAmount, split.subtotal, split.platformFee, split.hostCommission, split.hostPayout, existing.id]
+  );
+
+  notifyUser(
+    existing.host_id,
+    'Booking completed',
+    `Session ended. You'll receive ₹${split.hostPayout} for this booking.`
+  ).catch(() => {});
 
   res.json(rows[0]);
 }

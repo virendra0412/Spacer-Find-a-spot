@@ -8,7 +8,16 @@ const signupSchema = z.object({
   name: z.string().min(2),
   phone: z.string().min(8).max(15),
   email: z.string().email().optional(),
-  password: z.string().min(8),
+  password: z
+    .string()
+    .min(8, 'Password must be at least 8 characters')
+    // bcrypt silently ignores any bytes past 72 — capping here means a
+    // user's password is never truncated without their knowledge, which
+    // would otherwise be a confusing "my password doesn't work" bug for
+    // anyone with an unusually long passphrase.
+    .max(72, 'Password must be 72 characters or fewer')
+    .regex(/[a-zA-Z]/, 'Password must include at least one letter')
+    .regex(/[0-9]/, 'Password must include at least one number'),
 });
 
 async function signup(req, res) {
