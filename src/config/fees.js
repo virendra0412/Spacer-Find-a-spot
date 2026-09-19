@@ -17,6 +17,18 @@ const PLATFORM_FEE_FLAT = Number(process.env.PLATFORM_FEE_FLAT ?? 3);
 const PLATFORM_FEE_PERCENT = Number(process.env.PLATFORM_FEE_PERCENT ?? 2) / 100;
 const HOST_COMMISSION_PERCENT = Number(process.env.HOST_COMMISSION_PERCENT ?? 10) / 100;
 
+// Cancellation policy: free within a short grace period after booking
+// (so a mis-tap or change of mind costs nothing), and free any time up
+// until shortly before the reserved start — the host hasn't lost
+// anything from a cancellation that far out. Cancelling late (after the
+// grace period, close to start time) charges a fee that goes entirely
+// to the host as compensation for holding the slot — the platform takes
+// no commission on it, since no parking actually happened.
+const FREE_CANCELLATION_WINDOW_MINUTES = Number(process.env.FREE_CANCELLATION_WINDOW_MINUTES ?? 10);
+const FREE_CANCELLATION_BEFORE_START_HOURS = Number(process.env.FREE_CANCELLATION_BEFORE_START_HOURS ?? 1);
+const CANCELLATION_FEE_PERCENT = Number(process.env.CANCELLATION_FEE_PERCENT ?? 20) / 100;
+const CANCELLATION_FEE_MIN = Number(process.env.CANCELLATION_FEE_MIN ?? 5);
+
 function round2(n) {
   return Math.round(n * 100) / 100;
 }
@@ -35,9 +47,32 @@ function computeSplit(subtotal) {
   };
 }
 
+// True if cancelling right now costs nothing — either it's soon after
+// booking (grace period) or the reserved start is still far enough away
+// that the host hasn't effectively lost the slot.
+function isCancellationFree({ createdAt, startAt, now = new Date() }) {
+  const minutesSinceBooked = (now - new Date(createdAt)) / 60000;
+  if (minutesSinceBooked <= FREE_CANCELLATION_WINDOW_MINUTES) return true;
+
+  const hoursUntilStart = (new Date(startAt) - now) / 3600000;
+  if (hoursUntilStart >= FREE_CANCELLATION_BEFORE_START_HOURS) return true;
+
+  return false;
+}
+
+function computeCancellationFee(subtotal) {
+  return round2(Math.max(CANCELLATION_FEE_MIN, subtotal * CANCELLATION_FEE_PERCENT));
+}
+
 module.exports = {
   computeSplit,
   PLATFORM_FEE_FLAT,
   PLATFORM_FEE_PERCENT,
   HOST_COMMISSION_PERCENT,
+  FREE_CANCELLATION_WINDOW_MINUTES,
+  FREE_CANCELLATION_BEFORE_START_HOURS,
+  CANCELLATION_FEE_PERCENT,
+  CANCELLATION_FEE_MIN,
+  isCancellationFree,
+  computeCancellationFee,
 };

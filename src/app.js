@@ -11,6 +11,7 @@ const devicesRoutes = require('./routes/devices.routes');
 const paymentsRoutes = require('./routes/payments.routes');
 const usersRoutes = require('./routes/users.routes');
 const feesRoutes = require('./routes/fees.routes');
+const adminRoutes = require('./routes/admin.routes');
 const { errorHandler } = require('./middleware/errorHandler');
 
 const app = express();
@@ -44,6 +45,7 @@ app.use('/devices', devicesRoutes);
 app.use('/payments', paymentsRoutes);
 app.use('/users', usersRoutes);
 app.use('/fees', feesRoutes);
+app.use('/admin', adminRoutes);
 
 app.use((req, res) => res.status(404).json({ error: 'Not found' }));
 

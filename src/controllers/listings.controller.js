@@ -63,6 +63,16 @@ async function updateListing(req, res) {
 
   const listing = await getOwnedListingOr404(req.params.id, req.user.id);
 
+  // A listing an admin has removed can only come back via an admin
+  // action (PATCH /admin/listings/:id/status) — otherwise moderation
+  // is pointless, since the host could just PATCH status back to
+  // 'active' themselves the moment it's taken down. Editing other
+  // fields on a removed listing is blocked too, not just status, so a
+  // host can't dress up a moderated listing and reintroduce it later.
+  if (listing.status === 'removed') {
+    throw new AppError(403, 'This listing was removed by an admin and can no longer be edited. Contact support.');
+  }
+
   const fields = [];
   const values = [];
   let i = 1;

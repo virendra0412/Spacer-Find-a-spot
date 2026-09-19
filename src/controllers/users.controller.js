@@ -2,7 +2,7 @@ const { z } = require('zod');
 const { pool } = require('../config/db');
 const { AppError } = require('../utils/AppError');
 
-const PROFILE_COLUMNS = 'id, name, phone, email, role, rating_avg, created_at';
+const PROFILE_COLUMNS = 'id, name, phone, email, role, rating_avg, is_admin, created_at';
 
 // This is what AuthContext.js on the frontend was left with a TODO for:
 // on app relaunch, the client can silently refresh its access token, but

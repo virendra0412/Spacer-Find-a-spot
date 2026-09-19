@@ -121,3 +121,9 @@ turns into a clean `409`. This is race-condition-proof in a way a
   you have real traffic patterns to tune against.
 - No refresh-token revocation/rotation — a leaked refresh token is valid
   until it expires (30d default). Fine for MVP, not for a mature product.
+- No admin UI to grant admin access — it's a plain boolean, set by hand:
+  `UPDATE users SET is_admin = true WHERE phone = '9990001111';`
+  There's also no way to revoke it from the app either — same query with
+  `false`. Admin routes (`/admin/*`) check this fresh from the DB on
+  every request, so a revoke takes effect immediately, not after a token
+  expires.
