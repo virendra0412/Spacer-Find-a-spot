@@ -55,17 +55,40 @@ async function createReview(req, res) {
   res.status(201).json(rows[0]);
 }
 
+const reviewsQuerySchema = z.object({
+  limit: z.coerce.number().min(1).max(50).default(20),
+  offset: z.coerce.number().min(0).default(0),
+});
+
 async function listListingReviews(req, res) {
-  const { rows } = await pool.query(
-    `SELECT r.id, r.rating, r.comment, r.created_at, u.name AS author_name
-     FROM reviews r
-     JOIN bookings b ON b.id = r.booking_id
-     JOIN users u ON u.id = r.author_id
-     WHERE b.listing_id = $1
-     ORDER BY r.created_at DESC`,
-    [req.params.id]
-  );
-  res.json(rows);
+  const parsed = reviewsQuerySchema.safeParse(req.query);
+  if (!parsed.success) throw new AppError(400, parsed.error.issues[0].message);
+  const { limit, offset } = parsed.data;
+
+  // Total is fetched separately (not as a window function on every row)
+  // so the client can show an accurate "N reviews" count even when it
+  // only requests a small page — e.g. ListingDetail asks for limit=3 to
+  // show inline, but still needs the true total for its header text.
+  const [{ rows }, { rows: countRows }] = await Promise.all([
+    pool.query(
+      `SELECT r.id, r.rating, r.comment, r.created_at, u.name AS author_name
+       FROM reviews r
+       JOIN bookings b ON b.id = r.booking_id
+       JOIN users u ON u.id = r.author_id
+       WHERE b.listing_id = $1
+       ORDER BY r.created_at DESC
+       LIMIT $2 OFFSET $3`,
+      [req.params.id, limit, offset]
+    ),
+    pool.query(
+      `SELECT COUNT(*)::int AS total FROM reviews r
+       JOIN bookings b ON b.id = r.booking_id
+       WHERE b.listing_id = $1`,
+      [req.params.id]
+    ),
+  ]);
+
+  res.json({ reviews: rows, total: countRows[0].total, limit, offset });
 }
 
 module.exports = { createReview, listListingReviews };

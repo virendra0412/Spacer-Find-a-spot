@@ -62,6 +62,79 @@ async function listUsers(req, res) {
   res.json(rows);
 }
 
+const setAdminSchema = z.object({ is_admin: z.boolean() });
+
+// Promote or demote a user's admin access. This is the endpoint that
+// replaces "run an UPDATE by hand in psql" — every grant/revoke goes
+// through here, gets validated, and is recorded in admin_audit_log
+// instead of leaving no trace of who did it or when.
+async function setUserAdmin(req, res) {
+  const parsed = setAdminSchema.safeParse(req.body);
+  if (!parsed.success) throw new AppError(400, parsed.error.issues[0].message);
+  const { is_admin } = parsed.data;
+
+  // Blocks an admin from revoking their own access by mistake (or via a
+  // mis-tapped button) and locking themselves out with no other admin
+  // able to fix it. Demoting yourself still requires a *different* admin
+  // to do it.
+  if (req.params.id === req.user.id && !is_admin) {
+    throw new AppError(400, "You can't remove your own admin access. Ask another admin to do it.");
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const { rows } = await client.query(
+      `UPDATE users SET is_admin = $1 WHERE id = $2
+       RETURNING id, name, phone, email, role, is_admin`,
+      [is_admin, req.params.id]
+    );
+    if (!rows[0]) {
+      await client.query('ROLLBACK');
+      throw new AppError(404, 'User not found');
+    }
+
+    await client.query(
+      `INSERT INTO admin_audit_log (actor_id, action, target_user_id, detail)
+       VALUES ($1, $2, $3, $4)`,
+      [
+        req.user.id,
+        is_admin ? 'grant_admin' : 'revoke_admin',
+        req.params.id,
+        `${is_admin ? 'Granted' : 'Revoked'} admin access for ${rows[0].name} (${rows[0].phone})`,
+      ]
+    );
+
+    await client.query('COMMIT');
+    res.json(rows[0]);
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+// Recent admin actions — the audit trail itself. Kept simple (no
+// filtering yet) since admin action volume is low; add filters if that
+// stops being true.
+async function listAuditLog(req, res) {
+  const { limit, offset } = paginationSchema.parse(req.query);
+  const { rows } = await pool.query(
+    `SELECT al.id, al.action, al.detail, al.created_at,
+            ua.name AS actor_name, ua.phone AS actor_phone,
+            ut.name AS target_name, ut.phone AS target_phone
+     FROM admin_audit_log al
+     JOIN users ua ON ua.id = al.actor_id
+     LEFT JOIN users ut ON ut.id = al.target_user_id
+     ORDER BY al.created_at DESC
+     LIMIT $1 OFFSET $2`,
+    [limit, offset]
+  );
+  res.json(rows);
+}
+
 // All listings across every host, for moderation — the host-facing
 // GET /listings/mine deliberately only shows your own.
 async function listAllListings(req, res) {
@@ -120,4 +193,41 @@ async function listAllBookings(req, res) {
   res.json(rows);
 }
 
-module.exports = { getOverview, listUsers, listAllListings, moderateListing, listAllBookings };
+async function listVerifications(req, res) {
+  const { limit, offset } = paginationSchema.parse(req.query);
+  const { rows } = await pool.query(
+    `SELECT v.id, v.user_id, v.document_url, v.selfie_url, v.status,
+            v.review_note, v.submitted_at, v.reviewed_at,
+            u.name, u.phone, u.email
+     FROM identity_verifications v
+     JOIN users u ON u.id = v.user_id
+     ORDER BY (v.status = 'pending') DESC, v.submitted_at DESC
+     LIMIT $1 OFFSET $2`,
+    [limit, offset]
+  );
+  res.json(rows);
+}
+
+const verificationReviewSchema = z.object({
+  status: z.enum(['approved', 'rejected']),
+  review_note: z.string().max(1000).optional(),
+});
+
+async function reviewVerification(req, res) {
+  const parsed = verificationReviewSchema.safeParse(req.body);
+  if (!parsed.success) throw new AppError(400, parsed.error.issues[0].message);
+  const { rows } = await pool.query(
+    `UPDATE identity_verifications
+     SET status = $1, review_note = $2, reviewed_at = now(), reviewed_by = $3
+     WHERE user_id = $4
+     RETURNING id, user_id, status, review_note, submitted_at, reviewed_at`,
+    [parsed.data.status, parsed.data.review_note || null, req.user.id, req.params.userId]
+  );
+  if (!rows[0]) throw new AppError(404, 'Verification submission not found');
+  res.json(rows[0]);
+}
+
+module.exports = {
+  getOverview, listUsers, setUserAdmin, listAuditLog, listAllListings, moderateListing, listAllBookings,
+  listVerifications, reviewVerification,
+};

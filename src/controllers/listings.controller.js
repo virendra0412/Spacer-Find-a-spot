@@ -23,10 +23,10 @@ async function createListing(req, res) {
   const { rows } = await pool.query(
     `INSERT INTO listings
        (host_id, title, description, location, address_text, vehicle_type,
-        covered, has_cctv, price_per_hour, price_flat_night)
-     VALUES ($1, $2, $3, ST_SetSRID(ST_MakePoint($4, $5), 4326)::geography,
-             $6, $7, $8, $9, $10, $11)
-     RETURNING id, title, description, address_text, vehicle_type, covered,
+        covered, has_cctv, price_per_hour, price_flat_night, status)
+           VALUES ($1, $2, $3, ST_SetSRID(ST_MakePoint($4, $5), 4326)::geography,
+             $6, $7, $8, $9, $10, $11, 'paused')
+           RETURNING id, title, description, address_text, vehicle_type, covered,
                has_cctv, price_per_hour, price_flat_night, status, created_at`,
     [
       req.user.id, d.title, d.description || null, d.lng, d.lat,
@@ -207,12 +207,14 @@ const searchSchema = z.object({
   max_price: z.coerce.number().positive().optional(),
   covered: z.coerce.boolean().optional(),
   sort_by: z.enum(['distance', 'price_asc', 'price_desc']).default('distance'),
+  limit: z.coerce.number().min(1).max(50).default(20),
+  offset: z.coerce.number().min(0).default(0),
 });
 
 async function search(req, res) {
   const parsed = searchSchema.safeParse(req.query);
   if (!parsed.success) throw new AppError(400, parsed.error.issues[0].message);
-  const { lat, lng, radius_km, available_now, vehicle_type, max_price, covered, sort_by } = parsed.data;
+  const { lat, lng, radius_km, available_now, vehicle_type, max_price, covered, sort_by, limit, offset } = parsed.data;
 
   const params = [lng, lat, radius_km * 1000];
   let availabilityClause = '';
@@ -277,11 +279,18 @@ async function search(req, res) {
        ${priceClause}
        ${coveredClause}
      ORDER BY ${orderBy}
-     LIMIT 50`,
-    params
+     LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+    [...params, limit + 1, offset]
   );
 
-  res.json(rows);
+  // Fetching one extra row is cheaper than a second COUNT(*) query over
+  // the same geospatial + availability-subquery WHERE clause — if we got
+  // more rows than asked for, there's a next page; either way we only
+  // ever return `limit` rows to the client.
+  const has_more = rows.length > limit;
+  const listings = has_more ? rows.slice(0, limit) : rows;
+
+  res.json({ listings, limit, offset, has_more });
 }
 
 async function getListing(req, res) {
