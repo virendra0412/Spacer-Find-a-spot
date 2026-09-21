@@ -97,33 +97,27 @@ turns into a clean `409`. This is race-condition-proof in a way a
 |---|---|---|
 | POST | `/devices` | register/refresh an Expo push token |
 
-## Cloudinary media storage
-
-Listing photos and identity-verification images are uploaded by the backend
-to Cloudinary. Set these server-only variables in `.env`:
-
-```text
-CLOUDINARY_CLOUD_NAME=
-CLOUDINARY_API_KEY=
-CLOUDINARY_API_SECRET=
-```
-
-Run `npm run migrate` before starting the server. New listings remain paused
-until their first photo upload succeeds. Identity submissions are reviewed
-from the admin app and store only Cloudinary URLs and public IDs in Postgres.
-
 ## What's stubbed for Phase 2
 
-- **Payments**: `POST /payments/:bookingId/mark-paid` is still a manual stand-in.
-  Replace it with a real Razorpay order and signature-verified webhook.
-- **Push delivery tracking**: push failures are swallowed so notifications
-  cannot break booking flows; delivery receipts are not stored yet.
+- **Payments**: `POST /payments/:bookingId/mark-paid` is a manual stand-in.
+  Replace with a real Razorpay order + signature-verified webhook, and
+  either remove this endpoint or lock it behind an admin/test flag.
+- **Push notifications**: fires to Expo's push endpoint if a device token
+  exists; failures are swallowed (`.catch(() => {})`) so a bad push never
+  breaks a booking. No delivery tracking yet.
+- **Sessions "about to exceed expected time"** notification (mentioned in
+  the plan) isn't implemented — needs a scheduled job (e.g. a cron hitting
+  bookings where `now() > start_at + expected_duration`), not a request-cycle
+  concern.
 
 ## Known gaps to close before this is production-grade
 
-- No automated Jest/Supertest suite or CI pipeline yet.
-- No pagination on `/listings/mine`.
+- No test suite yet (the flows above were verified manually via curl —
+  worth turning into a Jest/Supertest suite against a test database).
+- No pagination on `/listings/mine` or `/listings/:id/reviews`.
 - `rating_avg` recompute in `reviews.controller.js` runs a full aggregate
-  query on every review; fine at MVP scale, revisit with larger volume.
-- Refresh-token rotation and revocation are implemented, but old sessions
-  must log in again after the first migration.
+  query on every review — fine at MVP scale, revisit if review volume grows.
+- Rate limiting is only on `/auth/*`; consider it for `/bookings` too once
+  you have real traffic patterns to tune against.
+- No refresh-token revocation/rotation — a leaked refresh token is valid
+  until it expires (30d default). Fine for MVP, not for a mature product.

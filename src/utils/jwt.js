@@ -8,11 +8,11 @@ function signAccessToken(user) {
   );
 }
 
-function signRefreshToken(user, tokenId) {
+function signRefreshToken(user) {
   return jwt.sign(
     { sub: user.id },
     process.env.JWT_REFRESH_SECRET,
-    { expiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '30d', jwtid: tokenId }
+    { expiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '30d' }
   );
 }
 

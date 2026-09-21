@@ -22,15 +22,16 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 // Reserved phone-number range for seed data — never used by real signups,
 // which makes this script's cleanup step safe and idempotent.
 const SEED_PHONES = [
+  '9999000000',                         // admin
   '9999000001', '9999000002', '9999000003', // hosts
   '9999000011', '9999000012',               // drivers
 ];
 
-async function createUser(client, passwordHash, { name, phone, email, role = 'both' }) {
+async function createUser(client, passwordHash, { name, phone, email, role = 'both', isAdmin = false }) {
   const { rows } = await client.query(
-    `INSERT INTO users (name, phone, email, password_hash, role)
-     VALUES ($1, $2, $3, $4, $5) RETURNING id`,
-    [name, phone, email, passwordHash, role]
+    `INSERT INTO users (name, phone, email, password_hash, role, is_admin)
+     VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+    [name, phone, email, passwordHash, role, isAdmin]
   );
   return rows[0].id;
 }
@@ -111,6 +112,10 @@ async function main() {
 
     const passwordHash = await bcrypt.hash('password123', 12);
 
+    const adminUser = await createUser(client, passwordHash, {
+      name: 'System Admin', phone: '9999000000', email: 'admin@spacer.app', role: 'both', isAdmin: true,
+    });
+
     const hostAshok = await createUser(client, passwordHash, {
       name: 'Ashok Patel', phone: '9999000001', email: 'ashok@example.com', role: 'host',
     });
@@ -127,32 +132,55 @@ async function main() {
       name: 'Neha Kulkarni', phone: '9999000012', email: 'neha@example.com', role: 'driver',
     });
 
-    // Four listings spread around a small area (Ahmedabad — CG Road /
-    // Navrangpura / Riverfront) so a "search nearby" query returns
-    // multiple results with varied distances.
+    // Seed spots around Samau/Motavas, Gujarat, so the default test location
+    // returns useful nearby results without requiring GPS permission.
     const listing1 = await createListing(client, hostAshok, {
-      title: 'Shivam Corporate Park - B2',
-      description: 'Secure basement parking, empty after 6pm on weekdays.',
-      lat: 23.0225, lng: 72.5714, address: 'CG Road, Ahmedabad',
+      title: 'Samau Main Road Covered Parking',
+      description: 'Secure covered parking close to the main road.',
+      lat: 22.9099163, lng: 72.9329566, address: 'Samau Main Road, Gujarat',
       vehicleType: 'any', covered: true, cctv: true, price: 15, flatNight: 80,
     });
     const listing2 = await createListing(client, hostAshok, {
-      title: 'Shivam Corporate Park - Rooftop',
-      description: 'Open rooftop parking, best for smaller cars.',
-      lat: 23.0231, lng: 72.5720, address: 'CG Road, Ahmedabad',
+      title: 'Motavas Open Lot',
+      description: 'Convenient open parking for cars and two-wheelers.',
+      lat: 22.9112, lng: 72.9344, address: 'Motavas Road, Gujarat',
       vehicleType: '4w', covered: false, cctv: false, price: 10,
     });
     const listing3 = await createListing(client, hostPriya, {
-      title: 'Ambar Apartments B-Wing Driveway',
-      description: 'Private driveway, free during work hours.',
-      lat: 23.0300, lng: 72.5650, address: 'Navrangpura, Ahmedabad',
+      title: 'Samau Village Driveway',
+      description: 'Private driveway with easy access throughout the day.',
+      lat: 22.9078, lng: 72.9312, address: 'Samau Village, Gujarat',
       vehicleType: '4w', covered: false, cctv: false, price: 12,
     });
     const listing4 = await createListing(client, hostRahul, {
-      title: 'Hotel Riverside Basement',
-      description: 'CCTV monitored, covered, close to the riverfront.',
-      lat: 23.0180, lng: 72.5800, address: 'Riverfront Road, Ahmedabad',
+      title: 'Motavas Secure Parking',
+      description: 'CCTV monitored covered parking near local shops.',
+      lat: 22.9131, lng: 72.9308, address: 'Motavas, Gujarat',
       vehicleType: '4w', covered: true, cctv: true, price: 20, flatNight: 120,
+    });
+    const listing5 = await createListing(client, hostPriya, {
+      title: 'Samau Two-Wheeler Bay',
+      description: 'Affordable sheltered parking for bikes and scooters.',
+      lat: 22.9087, lng: 72.9351, address: 'Samau Bus Stand Road, Gujarat',
+      vehicleType: '2w', covered: true, cctv: true, price: 6, flatNight: 35,
+    });
+    const listing6 = await createListing(client, hostRahul, {
+      title: 'Motavas Highway Parking',
+      description: 'Spacious parking with room for larger vehicles.',
+      lat: 22.9065, lng: 72.9368, address: 'Motavas Highway Road, Gujarat',
+      vehicleType: '6w', covered: false, cctv: true, price: 18, flatNight: 100,
+    });
+    const listing7 = await createListing(client, hostAshok, {
+      title: 'Samau Market Parking',
+      description: 'Central parking for short visits to the market.',
+      lat: 22.9120, lng: 72.9320, address: 'Samau Market, Gujarat',
+      vehicleType: 'any', covered: false, cctv: false, price: 8,
+    });
+    const listing8 = await createListing(client, hostPriya, {
+      title: 'Samau Farmhouse Parking',
+      description: 'Quiet off-road parking with a covered section.',
+      lat: 22.9049, lng: 72.9298, address: 'Motavas outskirts, Gujarat',
+      vehicleType: 'any', covered: true, cctv: false, price: 11, flatNight: 65,
     });
 
     await addPhoto(client, listing1, 'https://images.unsplash.com/photo-1506527347462-6d3e7e4e6e4f?w=1200', 0);
@@ -161,6 +189,10 @@ async function main() {
     await addPhoto(client, listing3, 'https://images.unsplash.com/photo-1604063165585-7a79a7b6a7a3?w=1200', 0);
     await addPhoto(client, listing4, 'https://images.unsplash.com/photo-1545179605-129e0c1f7f3f?w=1200', 0);
     await addPhoto(client, listing4, 'https://images.unsplash.com/photo-1573348722427-f1d6819fdf98?w=1200', 1);
+    await addPhoto(client, listing5, 'https://images.unsplash.com/photo-1558981806-ec527fa84c39?w=1200', 0);
+    await addPhoto(client, listing6, 'https://images.unsplash.com/photo-1565610222536-ef125c59da2e?w=1200', 0);
+    await addPhoto(client, listing7, 'https://images.unsplash.com/photo-1506527347462-6d3e7e4e6e4f?w=1200', 0);
+    await addPhoto(client, listing8, 'https://images.unsplash.com/photo-1590674899484-d5640e854abe?w=1200', 0);
 
     // Availability: listing1 mimics the real use case (open evenings +
     // overnight on weekdays, open all day on weekends). The rest are
@@ -173,7 +205,7 @@ async function main() {
     for (const day of [0, 6]) {
       await addDailySlot(client, listing1, day, '00:00', '23:59');
     }
-    for (const listingId of [listing2, listing3, listing4]) {
+    for (const listingId of [listing2, listing3, listing4, listing5, listing6, listing7, listing8]) {
       for (let day = 0; day < 7; day++) {
         await addDailySlot(client, listingId, day, '00:00', '23:59');
       }
@@ -242,17 +274,23 @@ async function main() {
 
     console.log('Seed complete.\n');
     console.log('Listings created:');
-    console.log(`  ${listing1}  Shivam Corporate Park - B2      (₹15/hr, host: Ashok)`);
-    console.log(`  ${listing2}  Shivam Corporate Park - Rooftop (₹10/hr, host: Ashok)`);
-    console.log(`  ${listing3}  Ambar Apartments B-Wing         (₹12/hr, host: Priya)`);
-    console.log(`  ${listing4}  Hotel Riverside Basement        (₹20/hr, host: Rahul)`);
+    console.log(`  ${listing1}  Samau Main Road Covered Parking (₹15/hr)`);
+    console.log(`  ${listing2}  Motavas Open Lot               (₹10/hr)`);
+    console.log(`  ${listing3}  Samau Village Driveway         (₹12/hr)`);
+    console.log(`  ${listing4}  Motavas Secure Parking         (₹20/hr)`);
+    console.log(`  ${listing5}  Samau Two-Wheeler Bay          (₹6/hr)`);
+    console.log(`  ${listing6}  Motavas Highway Parking        (₹18/hr)`);
+    console.log(`  ${listing7}  Samau Market Parking           (₹8/hr)`);
+    console.log(`  ${listing8}  Motavas Farmhouse Parking      (₹11/hr)`);
     console.log(`\nReserved booking (for testing the active-session screen): ${reservedBookingId}`);
     console.log('\nTest accounts — all use password: password123');
+    console.log('  Admin   System Admin    phone 9999000000  email admin@spacer.app');
     console.log('  Host    Ashok Patel     phone 9999000001');
     console.log('  Host    Priya Shah      phone 9999000002');
     console.log('  Host    Rahul Mehta     phone 9999000003');
     console.log('  Driver  Mihir Joshi     phone 9999000011');
     console.log('  Driver  Neha Kulkarni   phone 9999000012');
+    console.log(`\nAdmin user id: ${adminUser}`);
   } catch (err) {
     await client.query('ROLLBACK');
     console.error('Seed failed:', err);

@@ -48,14 +48,14 @@ async function submitVerification(req, res) {
   const { rows } = await pool.query(
     `INSERT INTO identity_verifications
        (user_id, document_url, document_public_id, selfie_url, selfie_public_id, status, review_note, reviewed_at, reviewed_by)
-     VALUES ($1, $2, $3, $4, $5, 'pending', NULL, NULL, NULL)
+     VALUES ($1, $2, $3, $4, $5, 'approved', 'Auto-approved for trust-based onboarding.', NULL, NULL)
      ON CONFLICT (user_id) DO UPDATE SET
        document_url = EXCLUDED.document_url,
        document_public_id = EXCLUDED.document_public_id,
        selfie_url = EXCLUDED.selfie_url,
        selfie_public_id = EXCLUDED.selfie_public_id,
-       status = 'pending',
-       review_note = NULL,
+       status = 'approved',
+       review_note = 'Auto-approved for trust-based onboarding.',
        submitted_at = now(),
        reviewed_at = NULL,
        reviewed_by = NULL
